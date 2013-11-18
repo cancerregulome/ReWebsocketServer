@@ -3,28 +3,22 @@ package main
 import (
 	"code.google.com/p/go.net/websocket"
 	"crypto/rand"
-	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
-	"mime/multipart"
 	"net/http"
-	"os"
 	"path"
-	"strconv"
+	"sync"
 	"time"
 )
 
 //var port *int = flag.Int("port", 23456, "Port to listen.")
-var host *string = flag.String("h", "localhost:23456", "Host:Port")
-var golem *string = flag.String("g", "http://glados1:8083/jobs/", "Golem master.")
-var task *string = flag.String("t", "/titan/cancerregulome9/workspaces/golems/bin/run_rface_and_post.sh", "Absolute path to sh script describing task.")
-var password *string = flag.String("p", "password", "Password to golem master.")
-var contentDir *string = flag.String("c", "./html/", "Path to html content dir.")
+var host *string = flag.String("hostname", "localhost:23456", "Host:Port")
+var contentDir *string = flag.String("contentdir", "./html/", "Path to html content dir.")
 
 //Global registry to keep track of where to send incoming results
 //TODO: maps aren't threadsafe so could break with lots of concurent inserts and should be RW mutexed
 var WsRegistry = map[string]chan string{}
+var RegistryRWMutex sync.RWMutex
 
 //Task struct used for json serialization and submission to golem
 type Task struct {
@@ -41,94 +35,22 @@ func UniqueId() string {
 	return fmt.Sprintf("%x", subId)
 }
 
-// posts a []Task to golem using the global configuration variables
-func GolemPostTasks(tasklist []Task) {
-	preader, pwriter := io.Pipe()
-
-	mpf := multipart.NewWriter(pwriter)
-	fmt.Println("creating request")
-	r, err := http.NewRequest("POST", *golem, preader)
-	if err != nil {
-		fmt.Println(err)
-
-	}
-	r.Header.Add("content-type", "multipart/form-data; boundary="+mpf.Boundary())
-	r.Header.Add("x-golem-apikey", *password)
-	r.Header.Add("x-golem-job-label", "StreamingRface")
-	//TODO: this is just a nicety and we can either eliminate or make this configurable
-	r.Header.Add("x-golem-job-owner", "codefor@systemsbiology.org")
-
-	go func() {
-		fmt.Println("Creating form field.")
-		mpfwriter, err := mpf.CreateFormFile("jsonfile", "data.json")
-		if err != nil {
-			fmt.Println(err)
-		}
-		fmt.Println("Creating json encoder.")
-		jsonencoder := json.NewEncoder(mpfwriter)
-		jsonencoder.Encode(tasklist)
-		mpf.Close()
-		pwriter.Close()
-		//
-
-		fmt.Println("Json encoded.")
-	}()
-
-	fmt.Println("Doing Request.")
-	client := &http.Client{}
-	resp, err := client.Do(r)
-	if err != nil {
-		fmt.Println(err)
-
-	}
-	fmt.Printf("job submision response %#v\n", resp)
-	io.Copy(os.Stdout, resp.Body)
-	//resp.Body.Close()
-	fmt.Println("Request Done.")
-
-}
-
-//turn a []int list of  ids into a list of tasks to be run and post it using GolemPostTasks 
-func SubmitTasks(ids []int, returnadd string) {
-	//TODO: the bash script task can check to see if it has results for a job but maybe we should check here to see 
-	//if a job is allready in progress and if the feature actually exsists.
-	n := len(ids)
-	tasklist := make([]Task, 0, n)
-	for i := 0; i < n; i++ {
-		tasklist = append(tasklist, Task{Count: 1, Args: []string{"bash", *task, strconv.Itoa(ids[i]), returnadd}})
-	}
-	fmt.Printf("tasklist %#v\n", tasklist)
-	fmt.Println("built task list.")
-	GolemPostTasks(tasklist)
-}
-
-//Handeler for websocket connectionf from client pages. Expects a []int list of feature id's as its first message 
+//Handeler for websocket connectionf from client pages. Expects a []int list of feature id's as its first message
 //and will submit these tasks and then wait to stream results back
 func SocketStreamer(ws *websocket.Conn) {
 	fmt.Printf("jsonServer %#v\n", ws.Config())
 	//for {
 	url := *ws.Config().Location
-	id := UniqueId()
-	url.Scheme = "http"
-	url.Path = "/results/" + id
-
-	var msg []int
-
-	err := websocket.JSON.Receive(ws, &msg)
-	if err != nil {
-		fmt.Println(err)
-		//break
-	}
-	//TODO:Consider allowing multiple tasks submissions on one channel instead of only waiting for one msg
-	fmt.Printf("recv:%#v\n", msg)
+	id := path.Base(url.Path)
 
 	RestultChan := make(chan string, 0)
+	RegistryRWMutex.Lock()
 	WsRegistry[id] = RestultChan
-	SubmitTasks(msg, url.String())
+	RegistryRWMutex.Unlock()
 
 	for {
 		msg := <-RestultChan
-		err = websocket.Message.Send(ws, msg)
+		err := websocket.Message.Send(ws, msg)
 		if err != nil {
 			fmt.Println(err)
 			break
@@ -145,7 +67,11 @@ func ResultHandeler(w http.ResponseWriter, req *http.Request) {
 	//and sanatize it so people can't push arbitray stuff to the client
 	fmt.Println("result request ", req.URL.Path)
 	id := path.Base(req.URL.Path)
+
+	RegistryRWMutex.RLock()
 	val, ok := WsRegistry[id]
+	RegistryRWMutex.RUnlock()
+
 	if ok {
 		select {
 		case val <- req.FormValue("results"):
@@ -156,18 +82,18 @@ func ResultHandeler(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-
-
 //main method, parse input, and setup webserver
 func main() {
 	flag.Parse()
-	http.Handle("/streamer", websocket.Handler(SocketStreamer))
+	fmt.Println("Serving ", *host)
+	fmt.Printf("Conect websockets to %v/streamer/id and post messages to %v/results/id\n\n", *host, *host)
+	http.Handle("/streamer/", websocket.Handler(SocketStreamer))
 	http.HandleFunc("/results/", ResultHandeler)
 	http.Handle("/html/", http.StripPrefix("/html/", http.FileServer(http.Dir(*contentDir))))
-    http.Handle("/", http.RedirectHandler("/html/index.html", http.StatusTemporaryRedirect))
+	http.Handle("/", http.RedirectHandler("/html/index.html", http.StatusTemporaryRedirect))
 	//fmt.Printf("http://localhost:%d/\n", *port)
 	err := http.ListenAndServe(*host, nil)
 	if err != nil {
-		panic("ListenANdServe: " + err.Error())
+		panic("ListenAndServe: " + err.Error())
 	}
 }

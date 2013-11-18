@@ -8,7 +8,8 @@ def main():
 	fo = open(sys.argv[1])
 	targetUrl = sys.argv[2]
 	
-	urllib2.urlopen(targetUrl,fo.read())
+	data = urllib.urlencode({"results":fo.read()})
+	urllib2.urlopen(targetUrl,data)
 
 
 if __name__ == '__main__':

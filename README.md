@@ -1,6 +1,36 @@
-StreamingRface
-==============
+ReWebSocketServer
+=================
 
-A simple go server to stream rf ace results to a client side visualization via web sockets.
+This is a simple prototype and demo of a server for streaming messages to Reglome Explorer users via websockets.
 
-This was a prototype that lead eventually to the Compute Engine Demo during the 2012 Google IO keynote.
+Each user connects a websocket to /streamer/uniqueid and server side services can post messages to
+/results/uniqueid
+
+POST request should have the message in the "results" form value. 
+
+Multipart request are not supported but can be.
+
+Websocket server based on code from the google io demo.
+
+
+Quick Start
+------------
+
+
+```
+#download and build
+git clone https://github.com/cancerregulome/ReWebsocketServer.git
+cd ReWebsocketServer
+go get
+go build
+
+#start server
+./ReWebSocketServer -hostname="localhost:23456" -contentdir="./html/"
+
+#open localhost:23456 in browser and conect a user named "user" (or whatever)
+
+#post a test message to  user
+python poster.py testmsg.txt http://localhost:23456/results/user
+```
+
+
