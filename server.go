@@ -2,7 +2,6 @@ package main
 
 import (
 	"code.google.com/p/go.net/websocket"
-	"crypto/rand"
 	"flag"
 	"fmt"
 	"net/http"
@@ -16,27 +15,10 @@ var host *string = flag.String("hostname", "localhost:23456", "Host:Port")
 var contentDir *string = flag.String("contentdir", "./html/", "Path to html content dir.")
 
 //Global registry to keep track of where to send incoming results
-//TODO: maps aren't threadsafe so could break with lots of concurent inserts and should be RW mutexed
 var WsRegistry = map[string]chan string{}
 var RegistryRWMutex sync.RWMutex
 
-//Task struct used for json serialization and submission to golem
-type Task struct {
-	Count int
-	Args  []string
-}
-
-//generate a unique random string
-func UniqueId() string {
-	subId := make([]byte, 16)
-	if _, err := rand.Read(subId); err != nil {
-		fmt.Println(err)
-	}
-	return fmt.Sprintf("%x", subId)
-}
-
-//Handeler for websocket connectionf from client pages. Expects a []int list of feature id's as its first message
-//and will submit these tasks and then wait to stream results back
+//Handeler for websocket connectionf from client pages.
 func SocketStreamer(ws *websocket.Conn) {
 	fmt.Printf("jsonServer %#v\n", ws.Config())
 	//for {
@@ -49,14 +31,27 @@ func SocketStreamer(ws *websocket.Conn) {
 	RegistryRWMutex.Unlock()
 
 	for {
-		msg := <-RestultChan
-		err := websocket.Message.Send(ws, msg)
-		if err != nil {
-			fmt.Println(err)
+
+		select {
+		case msg := <-RestultChan:
+			err := websocket.Message.Send(ws, msg)
+			if err != nil {
+				fmt.Println(err)
+				break
+			}
+			fmt.Printf("send:%#v\n", msg)
+
+		case <-time.After(5 * time.Minute):
+			fmt.Println("timed out streaming to user ", id)
 			break
 		}
-		fmt.Printf("send:%#v\n", msg)
+
 	}
+
+	RegistryRWMutex.Lock()
+	delete(WsRegistry, id)
+	RegistryRWMutex.Unlock()
+	ws.Close()
 
 	//TODO: remove ws from registry and cancel outstandign jobs when connetion dies
 }
@@ -77,7 +72,7 @@ func ResultHandeler(w http.ResponseWriter, req *http.Request) {
 		case val <- req.FormValue("results"):
 
 		case <-time.After(5 * time.Second):
-			fmt.Println("timed out streaming to task ", id)
+			fmt.Println("timed out streaming to user ", id)
 		}
 	}
 }
