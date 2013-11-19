@@ -27,12 +27,13 @@ go build
 #start server
 ./ReWebSocketServer -hostname="localhost:23456" -contentdir="./html/"
 
-
+```
 
 Using and Testing
 ------------------
 
 The number of concurent clients is limited by the number of open files (ulimit -n). 
+
 
 ```
 #open localhost:23456 in browser and conect a user named "user" (or whatever)
