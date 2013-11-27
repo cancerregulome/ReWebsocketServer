@@ -1,6 +1,7 @@
 //sockdrawer is a global singleton object for conectiong a client to a websocket and routing recived messages
 //to the appropriate place.
 //TODO: make this a non global singelton to support multiple conections per client?
+//TODO: publish backbone events instead of accepting handlers?
 var sockdrawer = {
 	listenrawer = null
 	listenaller = null
